@@ -25,6 +25,7 @@ from django.http import HttpResponseBadRequest
 from django.http import HttpResponseForbidden
 from django.http import HttpResponseNotFound
 from django.template.defaulttags import register
+from django.utils.html import format_html
 
 import fdb
 
@@ -51,8 +52,27 @@ vnstore = vnstore.open(['copernic', 'vnstore'], ITEMS)
 def getattr(dictionary, key):
     return dictionary.get(key)
 
+
+@register.filter
+def linkify(obj):
+    if isinstance(obj, UUID):
+        link = """<a target="_blank" href="/query/?uid0={}&key0=key%3F&value0=value%3F">{}</a>"""
+        link = format_html(link, obj, obj)
+        return link
+    if isinstance(obj, str) and (obj.startswith('http://') or obj.startswith('https://')):
+        link = """<a target="_blank" href="{}">{}</a>"""
+        link = format_html(link, obj, obj)
+        return link
+    return obj
+
+
 def index(request):
-    return render(request, 'index.html')
+    @fdb.transactional
+    def fetch_counter(tr):
+        count = nstore.count(tr)
+        return count
+    count = fetch_counter(db)
+    return render(request, 'index.html', dict(count=count))
 
 
 def about(request):
@@ -160,15 +180,9 @@ def uid(request, uid):
     except ValueError:
         return HttpResponseNotFound()
 
-    @fdb.transactional
-    def get(tr, uid):
-        out = nstore.FROM(tr, uid, var('key'), var('value'))
-        out = list(out)
-        return out
-
-    tuples = get(db, uid)
-
-    return render(request, 'uid.html', dict(uid=uid, tuples=tuples))
+    url = "/query/?uid0={}&key0=key%3F&value0=value%3F"
+    url = url.format(uid)
+    return redirect(url)
 
 def changes(request):
     changes = ChangeRequest.objects.all().order_by('-created_at')
@@ -212,7 +226,7 @@ def change(request, changeid):
             tr,
             var('uid'), var('key'), var('value'), var('alive'), changeid
         )
-        out = list(out)
+        out = list(take(out, 1000))
         return out
 
     changes = fetch(db, changeid)
