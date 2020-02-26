@@ -1,6 +1,7 @@
 import json
 from uuid import UUID
 
+import rdflib
 import fdb
 from django.core.management.base import BaseCommand, CommandError
 
@@ -25,10 +26,12 @@ vnstore = vnstore.open(['copernic', 'vnstore'], ITEMS)
 class Command(BaseCommand):
 
     def add_arguments(self, parser):
+        parser.add_argument('format')
         parser.add_argument('filename')
         parser.add_argument('message')
 
     def handle(self, *args, **kwargs):
+        format = kwargs['format']
         filename = kwargs['filename']
         message = kwargs['message']
 
@@ -45,54 +48,18 @@ class Command(BaseCommand):
         changeid = change_create(db, message)
 
         @fdb.transactional
-        def save(tr, changeid, line):
-            # TODO: need more validation
-            line = line.strip()
-            if not line:
-                return
-            triple = json.loads(line)
-
-            if (not isinstance(triple, list)) and len(triple) != 3:
-                raise Exception('Wrong format')
-
-            uid, key, value = triple
-
-            uid = uid.strip()
-            if not uid:
-                raise Exception('uid is required')
-
-            try:
-                uid = UUID(hex=uid)
-            except ValueError as exc:
-                raise Exception('not a uuid: {}'.format(uid))
-
-            key = key.strip().lower()
-            if not key:
-                raise Exception('wrong key: {}'.format(key))
-
-            if not value:
-                raise Exception('empty value')
-
-            if isinstance(value, str):
-                try:
-                    value = UUID(hex=value)
-                except ValueError:
-                    if value.lower() == 'false':
-                        value = False
-                    elif value.lower() == 'true':
-                        value = True
-
-            # value is something interesting
-            assert isinstance(value, (UUID, int, bool, str))
-
+        def save(tr, changeid, uid, key, value):
             vnstore.change_continue(tr, changeid)
-
             vnstore.add(tr, uid, key, value)
 
         for index, line in enumerate(file):
             if index % 100_000 == 0:
                 print(index)
-            save(db, changeid, line)
+
+            g = rdflib.Graph()
+            g.parse(data=line, format=format)
+            uid, key, value = next(iter(g))
+            save(db, changeid, uid, key, value)
 
         @fdb.transactional
         def apply(tr, change, changeid):
