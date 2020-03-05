@@ -33,6 +33,7 @@ import vnstore
 import nstore
 from .models import ChangeRequest
 from .models import Comment
+from .helpers import guess
 
 
 fdb.api_version(620)
@@ -105,20 +106,7 @@ def make_query(params):
                     # skip that pattern row
                     break
 
-                # Try to guess the Python object
-                try:
-                    value = UUID(hex=value)
-                except ValueError:
-                    try:
-                        value = int(value)
-                    except ValueError:
-                        if value.lower() == 'false':
-                            value = False
-                        elif value.lower() == 'true':
-                            value = True
-                        else:
-                            # just a string
-                            value = value
+                value = guess(value)
                 pattern.append(value)
         else:
             patterns.append(pattern)
@@ -146,10 +134,7 @@ def query(request):
             msg = 'There is no complete pattern...'
             return HttpResponseBadRequest(msg)
 
-        if all(isinstance(x, var) for x in patterns[0]):
-            msg = 'The first pattern must not be only made of variables!'
-            return HttpResponseBadRequest(msg)
-
+        @fdb.transactional
         def do(tr, patterns):
             out = nstore.FROM(tr, *patterns[0])
             # see nstore.select
@@ -182,10 +167,7 @@ def plot(request):
             msg = 'There is no complete pattern...'
             return HttpResponseBadRequest(msg)
 
-        if all(isinstance(x, var) for x in patterns[0]):
-            msg = 'The first pattern must not be only made of variables!'
-            return HttpResponseBadRequest(msg)
-
+        @fdb.transactional
         def do(tr, patterns):
             out = nstore.FROM(tr, *patterns[0])
             # see nstore.select
@@ -219,6 +201,7 @@ def map(request):
             msg = 'The first pattern must not be only made of variables!'
             return HttpResponseBadRequest(msg)
 
+        @fdb.transactional
         def do(tr, patterns):
             out = nstore.FROM(tr, *patterns[0])
             # see nstore.select
@@ -262,8 +245,8 @@ def change_new(request):
     else:
         message = request.POST['message']
         message = message.strip()
-        if len(message) < 50:
-            return HttpResponseBadRequest('Message too small (min 50)')
+        if len(message) < 30:
+            return HttpResponseBadRequest('Message too small (min 30)')
         if len(message) > 2048:
             return HttpResponseBadRequest('Message too big (max 2048)')
 
@@ -285,14 +268,14 @@ def change(request, changeid):
     change = get_object_or_404(ChangeRequest, changeid=changeid)
     comments = change.comment_set.all().order_by('created_at')
 
-    # fetch changes
+    @fdb.transactional
     def fetch(tr, changeid):
         # TODO: move the vnstore
         out = vnstore._tuples.FROM(
             tr,
             var('uid'), var('key'), var('value'), var('alive'), changeid
         )
-        out = list(take(out, 1000))
+        out = list(take(out, 100))
         return out
 
     changes = fetch(db, changeid)
@@ -325,36 +308,19 @@ def change_add(request, changeid):
     if request.method == 'POST':
         # get or create unique identifier
         uid = request.POST.get('uid', '')
-        uid = uid.strip()
-        if uid:
-            try:
-                uid = UUID(hex=uid)
-            except ValueError as exc:
-                return HttpResponseBadRequest()
-        else:
+        try:
+            uid = guess(uid)
+        except ValueError:
             uid = uuid4()
-        # get keys TODO: validate kebab-case with a regex
         key = request.POST['key']
-        key = key.strip()
-        if not key:
+        if key.isspace():
             return HttpResponseBadRequest()
+        key = guess(key)
         # get value, try to detect the type
         value = request.POST['value']
-        value = value.strip()
-        if not value:
+        if value.isspace():
             return HttpResponseBadRequest()
-        try:
-            value = UUID(hex=value)
-        except ValueError:
-            try:
-                value = int(value)
-            except ValueError:
-                if value.lower() == 'false':
-                    value = False
-                elif value.lower() == 'true':
-                    value = True
-        # value is something interesting
-        assert isinstance(value, (UUID, int, bool, str))
+        value = guess(value)
 
         @fdb.transactional
         def add(tr, uid, key, value):
@@ -376,38 +342,19 @@ def change_delete(request, changeid):
     if request.method == 'POST':
         # get or create unique identifier
         uid = request.POST.get('uid', '')
-        uid = uid.strip()
-        if uid:
-            try:
-                uid = UUID(hex=uid)
-            except ValueError as exc:
-                return HttpResponseBadRequest()
-        else:
-            uid = uuid4()
-        # get keys TODO: validate kebab-case with a regex
-        key = request.POST['key']
-        key = key.strip()
-        if not key:
+        if uid.isspace():
             return HttpResponseBadRequest()
-        key = key.lower()
+        uid = guess(uid)
+        key = request.POST['key']
+        if key.isspace():
+            return HttpResponseBadRequest()
+        key = guess(key)
 
         # get value, try to detect the type
         value = request.POST['value']
-        value = value.strip()
-        if not value:
+        if value.isspace():
             return HttpResponseBadRequest()
-        try:
-            value = UUID(hex=value)
-        except ValueError:
-            try:
-                value = int(value)
-            except ValueError:
-                if value.lower() == 'false':
-                    value = False
-                elif value.lower() == 'true':
-                    value = True
-        # value is something interesting
-        assert isinstance(value, (UUID, int, bool, str))
+        value = guess(value)
 
         @fdb.transactional
         def delete(tr, uid, key, value):
@@ -431,53 +378,54 @@ def change_import(request, changeid):
         file = request.FILES['file']
 
         @fdb.transactional
-        def save(tr, changeid, file):
-            for line in file:
-                # TODO: need more validationc
-                line = line.strip().decode('utf-8')
-                if not line:
-                    continue
-                triple = json.loads(line)
+        def save(tr, changeid, line):
+            line = line.strip().decode('utf-8')
+            if not line:
+                continue
+            triple = json.loads(line)
 
-                if (not isinstance(triple, list)) and len(triple) != 3:
-                    return HttpResponseBadRequest('Wrong format')
+            if (not isinstance(triple, list)) and len(triple) != 3:
+                return HttpResponseBadRequest('Wrong format')
 
-                uid, key, value = triple
+            uid, key, value = triple
 
-                uid = uid.strip()
-                if not uid:
-                    return HttpResponseBadRequest('uid is required')
+            try:
+                uid = guess(uid)
+            except ValueError:
+                return HttpResponseBadRequest('bad uid: {}'.format(uid))
 
-                try:
-                    uid = UUID(hex=uid)
-                except ValueError as exc:
-                    return HttpResponseBadRequest('not a uuid: {}'.format(uid))
+            try:
+                key = guess(key)
+            except ValueError:
+                return HttpResponseBadRequest('bad key: {}'.format(key))
 
-                key = key.strip().lower()
-                if not key:
-                    return HttpResponseBadRequest('wrong key: {}'.format(key))
+            try:
+                value = guess(value)
+            except ValueError:
+                return HttpResponseBadRequest('bad value: {}'.format(value))
 
-                if not value:
-                    return HttpResponseBadRequest()
-                if isinstance(value, str):
-                    try:
-                        value = UUID(hex=value)
-                    except ValueError:
-                        if value.lower() == 'false':
-                            value = False
-                        elif value.lower() == 'true':
-                            value = True
+            vnstore.change_continue(tr, changeid)
 
-                # value is something interesting
-                assert isinstance(value, (UUID, int, bool, str))
+            vnstore.add(tr, uid, key, value)
 
-                vnstore.change_continue(tr, changeid)
+            return None
 
-                vnstore.add(tr, uid, key, value)
-
-            return redirect('/change/{}/'.format(changeid))
-
-        return save(db, changeid, file)
+        for line in file:
+            # Instead of one big transaction, each line is its own
+            # transaction this allows to possibly import large-ish
+            # files (see
+            # https://apple.github.io/foundationdb/known-limitations.html).
+            # In cases where the import process would timeout browser
+            # side or proxy side.  One should rely on admin command
+            # load command.
+            out = save(db, changeid, line)
+            if out is not None:
+                # XXX: save might return an HTTP response in case it
+                # fails validation.  Validating then importing known
+                # valid input would be slower.
+                return out
+        # Import succeed!
+        redirect('/change/{}/'.format(changeid))
     else:
         return HttpResponseBadRequest()
 
@@ -494,6 +442,7 @@ def change_apply(request, changeid):
     if change.status == ChangeRequest.STATUS_APPLIED:
         return HttpResponseBadRequest('Change already applied!')
 
+    @fdb.transactional
     def apply(tr, change, changeid):
         # apply change to vnstore
         vnstore.change_apply(tr, changeid)
