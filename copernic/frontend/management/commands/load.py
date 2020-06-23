@@ -17,8 +17,6 @@ db = fdb.open()
 ITEMS = ['uid', 'key', 'value']
 
 var = nstore.var
-# nstore contain the latest version snapshot
-nstore = nstore.open(['copernic', 'nstore'], ITEMS)
 # vnstore contains the versioned ITEMS
 vnstore = vnstore.open(['copernic', 'vnstore'], ITEMS)
 
@@ -90,17 +88,6 @@ class Command(BaseCommand):
             # mark the change as applied
             change.status = ChangeRequest.STATUS_APPLIED
             change.save()
-            # apply changes to snapshot
-            changes = vnstore._tuples.FROM(
-                tr,
-                var('uid'), var('key'), var('value'), var('alive'), changeid
-            )
-            for change in changes:
-                if change['alive']:
-                    op = nstore.add
-                else:
-                    op = nstore.delete
-                op(tr, change['uid'], change['key'], change['value'])
 
         change = ChangeRequest.objects.get(changeid=changeid)
         apply(db, change, changeid)
