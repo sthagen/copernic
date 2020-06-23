@@ -7,6 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 import vnstore
 import nstore
+import istore
 from frontend.models import ChangeRequest
 
 
@@ -50,14 +51,28 @@ class Command(BaseCommand):
             vnstore.change_continue(tr, changeid)
             vnstore.add(tr, uid, key, value)
 
-        for index, line in enumerate(file):
-            if index % 1_000 == 0:
-                print(index)
+        def simplify(v):
+            if isinstance(v, (int, float)):
+                return v
+            return str(v)
 
-            g = rdflib.Graph()
-            g.parse(data=line, format=format)
-            uid, key, value = next(iter(g))
-            save(db, changeid, uid, key, value)
+        @fdb.transactional
+        def load(tr):
+            for index, line in enumerate(file):
+                if index % 1_000 == 0:
+                    print(index)
+
+                g = rdflib.Graph()
+                g.parse(data=line, format=format)
+                uid, key, value = next(iter(g))
+
+                uid = istore.get_or_create(tr, simplify(uid))
+                key = istore.get_or_create(tr, simplify(key))
+                value = istore.get_or_create(tr, simplify(value))
+
+                save(tr, changeid, uid, key, value)
+
+        load(db)
 
         @fdb.transactional
         def apply(tr, change, changeid):
