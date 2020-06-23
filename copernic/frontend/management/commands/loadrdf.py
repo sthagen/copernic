@@ -66,9 +66,12 @@ class Command(BaseCommand):
                 g.parse(data=line, format=format)
                 uid, key, value = next(iter(g))
 
-                uid = istore.get_or_create(tr, simplify(uid))
-                key = istore.get_or_create(tr, simplify(key))
-                value = istore.get_or_create(tr, simplify(value))
+                if isinstance(uid, str):
+                    uid = istore.get_or_create(tr, simplify(uid))
+                if isinstance(key, str):
+                    key = istore.get_or_create(tr, simplify(key))
+                if isinstance(value, str):
+                    value = istore.get_or_create(tr, simplify(value))
 
                 save(tr, changeid, uid, key, value)
 
