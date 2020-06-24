@@ -14,8 +14,6 @@
 
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-from uuid import uuid4
-
 import fdb
 import fdb.tuple
 import xxhash
@@ -30,22 +28,22 @@ class IStoreException(Exception):
 
 
 
-HASH_TO_UUID = 0
-UUID_TO_HASH = 1
-UUID_TO_VALUE = 2
+HASH_TO_UID = 0
+UID_TO_HASH = 1
+UID_TO_VALUE = 2
 MAGIC = 42
 
 
-def get_or_create(tr, value):
+def get_or_create(tr, allocator, value):
     bytes = fdb.tuple.pack((value,))
     hash = xxhash.xxh64_digest(bytes)
-    key = fdb.tuple.pack((MAGIC, HASH_TO_UUID, hash))
+    key = fdb.tuple.pack((MAGIC, HASH_TO_UID, hash))
     uid = tr.get(key)
-    if uid is not None:
+    if uid != None:
         return uid
     # otherwise create it
-    uid = uuid4()
+    uid = allocator.allocate(tr)
     tr.set(key, uid)
-    tr.set(fdb.tuple.pack((MAGIC, UUID_TO_HASH, uid)), hash)
-    tr.set(fdb.tuple.pack((MAGIC, UUID_TO_VALUE, uid)), bytes)
+    tr.set(fdb.tuple.pack((MAGIC, UID_TO_HASH, uid)), hash)
+    tr.set(fdb.tuple.pack((MAGIC, UID_TO_VALUE, uid)), bytes)
     return uid

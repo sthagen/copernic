@@ -36,6 +36,9 @@ class Command(BaseCommand):
 
         file = open(filename)
 
+        subspace = fdb.subspace_impl.Subspace(('hca',))
+        allocator = fdb.directory_impl.HighContentionAllocator()
+
         @fdb.transactional
         def change_create(tr, message):
             changeid = vnstore.change_create(tr)
@@ -67,12 +70,13 @@ class Command(BaseCommand):
                 uid, key, value = next(iter(g))
 
                 if isinstance(uid, str):
-                    uid = istore.get_or_create(tr, simplify(uid))
+                    uid = istore.get_or_create(tr, allocator, simplify(uid))
                 if isinstance(key, str):
-                    key = istore.get_or_create(tr, simplify(key))
+                    key = istore.get_or_create(tr, allocator, simplify(key))
                 if isinstance(value, str):
-                    value = istore.get_or_create(tr, simplify(value))
+                    value = istore.get_or_create(tr, allocator, simplify(value))
 
+                print(uid, key, value)
                 save(tr, changeid, uid, key, value)
 
         load(db)
