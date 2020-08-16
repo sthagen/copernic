@@ -7,6 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 import vnstore
 import nstore
+import istore
 from frontend.models import ChangeRequest
 
 
@@ -17,8 +18,6 @@ db = fdb.open()
 ITEMS = ['uid', 'key', 'value']
 
 var = nstore.var
-# nstore contain the latest version snapshot
-nstore = nstore.open(['copernic', 'nstore'], ITEMS)
 # vnstore contains the versioned ITEMS
 vnstore = vnstore.open(['copernic', 'vnstore'], ITEMS)
 
@@ -37,6 +36,9 @@ class Command(BaseCommand):
 
         file = open(filename)
 
+        subspace = fdb.subspace_impl.Subspace(('hca',))
+        allocator = fdb.directory_impl.HighContentionAllocator()
+
         @fdb.transactional
         def change_create(tr, message):
             changeid = vnstore.change_create(tr)
@@ -52,14 +54,32 @@ class Command(BaseCommand):
             vnstore.change_continue(tr, changeid)
             vnstore.add(tr, uid, key, value)
 
-        for index, line in enumerate(file):
-            if index % 100_000 == 0:
-                print(index)
+        def simplify(v):
+            if isinstance(v, (int, float)):
+                return v
+            return str(v)
 
-            g = rdflib.Graph()
-            g.parse(data=line, format=format)
-            uid, key, value = next(iter(g))
-            save(db, changeid, uid, key, value)
+        @fdb.transactional
+        def load(tr):
+            for index, line in enumerate(file):
+                if index % 1_000 == 0:
+                    print(index)
+
+                g = rdflib.Graph()
+                g.parse(data=line, format=format)
+                uid, key, value = next(iter(g))
+
+                if isinstance(uid, str):
+                    uid = istore.get_or_create(tr, allocator, simplify(uid))
+                if isinstance(key, str):
+                    key = istore.get_or_create(tr, allocator, simplify(key))
+                if isinstance(value, str):
+                    value = istore.get_or_create(tr, allocator, simplify(value))
+
+                print(uid, key, value)
+                save(tr, changeid, uid, key, value)
+
+        load(db)
 
         @fdb.transactional
         def apply(tr, change, changeid):
@@ -68,17 +88,6 @@ class Command(BaseCommand):
             # mark the change as applied
             change.status = ChangeRequest.STATUS_APPLIED
             change.save()
-            # apply changes to snapshot
-            changes = vnstore._tuples.FROM(
-                tr,
-                var('uid'), var('key'), var('value'), var('alive'), changeid
-            )
-            for change in changes:
-                if change['alive']:
-                    op = nstore.add
-                else:
-                    op = nstore.delete
-                op(tr, change['uid'], change['key'], change['value'])
 
         change = ChangeRequest.objects.get(changeid=changeid)
         apply(db, change, changeid)

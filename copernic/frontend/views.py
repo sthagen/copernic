@@ -26,6 +26,7 @@ from django.http import HttpResponseForbidden
 from django.http import HttpResponseNotFound
 from django.template.defaulttags import register
 from django.utils.html import format_html
+from django.http import JsonResponse
 
 import fdb
 
@@ -43,8 +44,6 @@ db = fdb.open()
 ITEMS = ['uid', 'key', 'value']
 
 var = nstore.var
-# nstore contain the latest version snapshot
-nstore = nstore.open(['copernic', 'nstore'], ITEMS)
 # vnstore contains the versioned ITEMS
 vnstore = vnstore.open(['copernic', 'vnstore'], ITEMS)
 
@@ -156,7 +155,12 @@ def query(request):
         bindings=bindings,
         patterns=request.GET,
     )
-    return render(request, 'query.html', context)
+
+    if request.GET.get('json', False):
+        contexte["bindings"] = [dict(x) for x in bindings]
+        return JsonResponse(context)
+    else:
+        return render(request, 'query.html', context)
 
 
 def plot(request):
@@ -381,7 +385,7 @@ def change_import(request, changeid):
         def save(tr, changeid, line):
             line = line.strip().decode('utf-8')
             if not line:
-                continue
+                return
             triple = json.loads(line)
 
             if (not isinstance(triple, list)) and len(triple) != 3:
@@ -449,18 +453,6 @@ def change_apply(request, changeid):
         # mark the change as applied
         change.status = ChangeRequest.STATUS_APPLIED
         change.save()
-        # apply changes to snapshot
-        changes = vnstore._tuples.FROM(
-            tr,
-            var('uid'), var('key'), var('value'), var('alive'), changeid
-        )
-        for change in changes:
-            if change['alive']:
-                op = nstore.add
-            else:
-                op = nstore.delete
-            op(tr, change['uid'], change['key'], change['value'])
-
 
     apply(db, change, changeid)
 
